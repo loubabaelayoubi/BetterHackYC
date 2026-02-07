@@ -35,9 +35,9 @@ export default function Home() {
   const [showViewer, setShowViewer] = useState(false);
   const [useDraft, setUseDraft] = useState(true);
   
-  // Image upload state
-  const [selectedImage, setSelectedImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  // Image upload state - now supports multiple images
+  const [selectedImages, setSelectedImages] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load API key from localStorage on mount
@@ -58,49 +58,70 @@ export default function Home() {
     }
   };
 
-  // Handle image selection
+  // Handle image selection - supports multiple
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    // Validate total count (max 8 images)
+    if (selectedImages.length + files.length > 8) {
+      setStatus("error");
+      setStatusMessage("Maximum 8 images allowed");
+      return;
+    }
+
+    const validFiles: File[] = [];
+    const newPreviews: string[] = [];
+
+    for (const file of files) {
       // Validate file type
       if (!file.type.startsWith("image/")) {
         setStatus("error");
-        setStatusMessage("Please select an image file");
-        return;
+        setStatusMessage(`${file.name} is not an image file`);
+        continue;
       }
       
-      // Validate file size (max 10MB)
+      // Validate file size (max 10MB each)
       if (file.size > 10 * 1024 * 1024) {
         setStatus("error");
-        setStatusMessage("Image must be less than 10MB");
-        return;
+        setStatusMessage(`${file.name} exceeds 10MB limit`);
+        continue;
       }
       
-      setSelectedImage(file);
-      setImagePreview(URL.createObjectURL(file));
+      validFiles.push(file);
+      newPreviews.push(URL.createObjectURL(file));
+    }
+
+    if (validFiles.length > 0) {
+      setSelectedImages(prev => [...prev, ...validFiles]);
+      setImagePreviews(prev => [...prev, ...newPreviews]);
       setStatus("idle");
       setStatusMessage("");
     }
   };
 
-  const clearImage = () => {
-    setSelectedImage(null);
-    if (imagePreview) {
-      URL.revokeObjectURL(imagePreview);
-    }
-    setImagePreview(null);
+  const removeImage = (index: number) => {
+    URL.revokeObjectURL(imagePreviews[index]);
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+    setImagePreviews(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const clearAllImages = () => {
+    imagePreviews.forEach(url => URL.revokeObjectURL(url));
+    setSelectedImages([]);
+    setImagePreviews([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
 
   // Upload image and get media asset ID
-  const uploadImage = async (file: File): Promise<string> => {
+  const uploadImage = async (file: File, index: number, total: number): Promise<string> => {
     // Get file extension
     const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
     
     // Step 1: Prepare upload
-    setStatusMessage("Preparing upload...");
+    setStatusMessage(`Preparing upload (${index + 1}/${total})...`);
     const prepareRes = await fetch("/api/upload/prepare", {
       method: "POST",
       headers: {
@@ -122,7 +143,7 @@ export default function Home() {
     const { media_asset, upload_info } = await prepareRes.json();
     
     // Step 2: Upload file to signed URL
-    setStatusMessage("Uploading image...");
+    setStatusMessage(`Uploading image ${index + 1}/${total}...`);
     const uploadRes = await fetch(upload_info.upload_url, {
       method: "PUT",
       headers: {
@@ -133,7 +154,7 @@ export default function Home() {
     });
 
     if (!uploadRes.ok) {
-      throw new Error("Failed to upload image");
+      throw new Error(`Failed to upload image ${index + 1}`);
     }
 
     return media_asset.media_asset_id;
@@ -172,8 +193,8 @@ export default function Home() {
     }
   };
 
-  const generateWorld = async (mediaAssetId?: string) => {
-    if (!mediaAssetId && !prompt.trim()) return;
+  const generateWorld = async (mediaAssetIds?: string[]) => {
+    if ((!mediaAssetIds || mediaAssetIds.length === 0) && !prompt.trim()) return;
     if (!apiKey.trim()) {
       setStatus("error");
       setStatusMessage("Please enter your World Labs API key");
@@ -193,7 +214,7 @@ export default function Home() {
           prompt: prompt.trim(), 
           draft: useDraft, 
           apiKey: apiKey.trim(),
-          mediaAssetId: mediaAssetId,
+          mediaAssetIds: mediaAssetIds,
         }),
       });
 
@@ -263,26 +284,29 @@ export default function Home() {
       return;
     }
 
-    if (!selectedImage && !prompt.trim()) {
+    if (selectedImages.length === 0 && !prompt.trim()) {
       setStatus("error");
-      setStatusMessage("Please enter a prompt or upload an image");
+      setStatusMessage("Please enter a prompt or upload at least one image");
       return;
     }
 
     try {
-      let mediaAssetId: string | undefined;
+      let mediaAssetIds: string[] = [];
 
-      // If image is selected, upload it first
-      if (selectedImage) {
+      // If images are selected, upload them first
+      if (selectedImages.length > 0) {
         setStatus("uploading");
-        mediaAssetId = await uploadImage(selectedImage);
+        for (let i = 0; i < selectedImages.length; i++) {
+          const id = await uploadImage(selectedImages[i], i, selectedImages.length);
+          mediaAssetIds.push(id);
+        }
       }
 
       // Generate world
-      await generateWorld(mediaAssetId);
+      await generateWorld(mediaAssetIds.length > 0 ? mediaAssetIds : undefined);
       
-      // Clear image after successful generation
-      clearImage();
+      // Clear images after successful generation
+      clearAllImages();
     } catch (error) {
       console.error("Generation error:", error);
       setStatus("error");
@@ -355,7 +379,7 @@ export default function Home() {
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={selectedImage ? "Optional: Add a description to guide the generation..." : "A mystical forest with glowing mushrooms and fireflies at twilight..."}
+                  placeholder={selectedImages.length > 0 ? "Optional: Add a description to guide the generation..." : "A mystical forest with glowing mushrooms and fireflies at twilight..."}
                   className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                   rows={3}
                   disabled={status === "generating" || status === "uploading"}
@@ -364,39 +388,61 @@ export default function Home() {
 
               {/* Image Upload Section */}
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Or upload an image
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Or upload images <span className="text-gray-500">(up to 8)</span>
+                  </label>
+                  {selectedImages.length > 0 && (
+                    <button
+                      onClick={clearAllImages}
+                      className="text-xs text-red-400 hover:text-red-300"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                </div>
                 
-                {!imagePreview ? (
+                {/* Image Grid */}
+                {imagePreviews.length > 0 && (
+                  <div className="grid grid-cols-4 gap-2 mb-3">
+                    {imagePreviews.map((preview, index) => (
+                      <div key={index} className="relative aspect-square rounded-lg overflow-hidden group">
+                        <img
+                          src={preview}
+                          alt={`Selected ${index + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                        <button
+                          onClick={() => removeImage(index)}
+                          className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-red-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs px-1 py-0.5 truncate">
+                          {selectedImages[index]?.name}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Upload Button */}
+                {selectedImages.length < 8 && (
                   <div
                     onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-gray-600 rounded-xl p-6 text-center cursor-pointer hover:border-gray-500 hover:bg-gray-800/30 transition-colors"
+                    className="border-2 border-dashed border-gray-600 rounded-xl p-4 text-center cursor-pointer hover:border-gray-500 hover:bg-gray-800/30 transition-colors"
                   >
-                    <svg className="w-10 h-10 mx-auto text-gray-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    <svg className="w-8 h-8 mx-auto text-gray-500 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
                     </svg>
-                    <p className="text-gray-400 text-sm">Click to upload an image</p>
-                    <p className="text-gray-500 text-xs mt-1">PNG, JPG, WEBP up to 10MB</p>
-                  </div>
-                ) : (
-                  <div className="relative rounded-xl overflow-hidden">
-                    <img
-                      src={imagePreview}
-                      alt="Selected"
-                      className="w-full h-48 object-cover"
-                    />
-                    <button
-                      onClick={clearImage}
-                      className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 rounded-full text-white transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                    <div className="absolute bottom-2 left-2 px-2 py-1 bg-black/60 rounded text-white text-xs">
-                      {selectedImage?.name}
-                    </div>
+                    <p className="text-gray-400 text-sm">
+                      {selectedImages.length === 0 ? "Click to upload images" : "Add more images"}
+                    </p>
+                    <p className="text-gray-500 text-xs mt-1">
+                      {selectedImages.length}/8 images • PNG, JPG, WEBP up to 10MB each
+                    </p>
                   </div>
                 )}
                 
@@ -404,9 +450,16 @@ export default function Home() {
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
+                  multiple
                   onChange={handleImageSelect}
                   className="hidden"
                 />
+                
+                {selectedImages.length > 1 && (
+                  <p className="text-xs text-blue-400 mt-2">
+                    💡 Multiple images will be combined into a 360° world
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center justify-between">
@@ -425,7 +478,7 @@ export default function Home() {
 
                 <button
                   onClick={handleGenerate}
-                  disabled={(!prompt.trim() && !selectedImage) || !apiKey.trim() || status === "generating" || status === "uploading"}
+                  disabled={(!prompt.trim() && selectedImages.length === 0) || !apiKey.trim() || status === "generating" || status === "uploading"}
                   className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors flex items-center space-x-2"
                 >
                   {status === "uploading" ? (
