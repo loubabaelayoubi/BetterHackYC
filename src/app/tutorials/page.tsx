@@ -1,47 +1,45 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useSession } from "@/lib/auth-client";
 import { UserButton } from "@/components/auth";
 
-// Mock tutorials for demo - in production these come from the database
-const mockTutorials = [
-  {
-    id: "tut_1",
-    title: "Warehouse Safety Basics",
-    workspaceName: "Main Warehouse",
-    annotationCount: 5,
-    thumbnail: null,
-    shareLink: "abc123",
-    completed: false,
-    progress: 2,
-  },
-  {
-    id: "tut_2", 
-    title: "Forklift Operation Training",
-    workspaceName: "Loading Dock",
-    annotationCount: 8,
-    thumbnail: null,
-    shareLink: "def456",
-    completed: true,
-    progress: 8,
-  },
-  {
-    id: "tut_3",
-    title: "Emergency Procedures",
-    workspaceName: "Main Warehouse",
-    annotationCount: 12,
-    thumbnail: null,
-    shareLink: "ghi789",
-    completed: false,
-    progress: 0,
-  },
-];
+interface Tutorial {
+  id: string;
+  title: string;
+  shareLink: string;
+  createdAt: string;
+  workspace: {
+    id: string;
+    name: string;
+    modelUuid: string;
+  };
+  annotations: { id: string }[];
+}
 
 export default function TutorialsPage() {
   const { data: session } = useSession();
-  const [tutorials] = useState(mockTutorials);
+  const [tutorials, setTutorials] = useState<Tutorial[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadTutorials() {
+      try {
+        const res = await fetch("/api/tutorials");
+        if (res.ok) {
+          const data = await res.json();
+          setTutorials(data.tutorials || []);
+        }
+      } catch (err) {
+        console.error("Failed to load tutorials:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadTutorials();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -72,25 +70,27 @@ export default function TutorialsPage() {
             <p className="text-gray-400 mt-1">Interactive 3D training modules</p>
           </div>
           <Link
-            href="/studio"
+            href="/dashboard"
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
           >
             + Create Tutorial
           </Link>
         </div>
 
-        {tutorials.length === 0 ? (
+        {loading ? (
+          <div className="text-center py-12 text-gray-400">Loading tutorials...</div>
+        ) : tutorials.length === 0 ? (
           <div className="bg-gray-800 rounded-xl border border-gray-700 p-12 text-center">
             <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
             <h3 className="text-xl font-semibold mb-2">No tutorials yet</h3>
-            <p className="text-gray-400 mb-6">Create your first tutorial by generating a 3D workspace</p>
+            <p className="text-gray-400 mb-6">Create your first tutorial from a workspace</p>
             <Link
-              href="/studio"
+              href="/dashboard"
               className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
             >
-              Open 3D Studio
+              Go to Dashboard
             </Link>
           </div>
         ) : (
@@ -110,22 +110,13 @@ export default function TutorialsPage() {
                 {/* Content */}
                 <div className="p-4">
                   <h3 className="font-semibold text-lg mb-1">{tutorial.title}</h3>
-                  <p className="text-sm text-gray-400 mb-3">{tutorial.workspaceName}</p>
+                  <p className="text-sm text-gray-400 mb-3">{tutorial.workspace?.name || "Unknown workspace"}</p>
 
-                  {/* Progress */}
-                  <div className="mb-4">
-                    <div className="flex justify-between text-xs text-gray-400 mb-1">
-                      <span>{tutorial.progress} / {tutorial.annotationCount} steps</span>
-                      <span>{Math.round((tutorial.progress / tutorial.annotationCount) * 100)}%</span>
-                    </div>
-                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          tutorial.completed ? "bg-green-500" : "bg-blue-500"
-                        }`}
-                        style={{ width: `${(tutorial.progress / tutorial.annotationCount) * 100}%` }}
-                      />
-                    </div>
+                  {/* Stats */}
+                  <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
+                    <span>{tutorial.annotations?.length || 0} annotations</span>
+                    <span>•</span>
+                    <span>{new Date(tutorial.createdAt).toLocaleDateString()}</span>
                   </div>
 
                   {/* Actions */}
@@ -134,7 +125,7 @@ export default function TutorialsPage() {
                       href={`/tutorials/${tutorial.id}`}
                       className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium text-center transition-colors"
                     >
-                      {tutorial.completed ? "Review" : "Continue"}
+                      Edit
                     </Link>
                     <button
                       onClick={() => {
@@ -150,13 +141,6 @@ export default function TutorialsPage() {
                     </button>
                   </div>
                 </div>
-
-                {/* Status badge */}
-                {tutorial.completed && (
-                  <div className="absolute top-3 right-3 px-2 py-1 bg-green-600 rounded text-xs font-medium">
-                    Completed
-                  </div>
-                )}
               </div>
             ))}
           </div>

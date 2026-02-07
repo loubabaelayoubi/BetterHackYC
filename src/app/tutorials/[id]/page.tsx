@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   AnnotationViewer,
@@ -10,7 +10,6 @@ import {
   type Annotation,
 } from "@/components/annotations";
 
-// Mock world data - in production this would come from your API
 interface World {
   id: string;
   display_name: string;
@@ -28,17 +27,27 @@ interface World {
   world_marble_url: string;
 }
 
+interface Tutorial {
+  id: string;
+  title: string;
+  workspaceId: string;
+  shareLink: string;
+  workspace?: {
+    id: string;
+    name: string;
+    modelUuid: string;
+  };
+  annotations: Annotation[];
+}
+
 export default function TutorialEditorPage() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const tutorialId = params.id as string;
-  
-  const [tutorial, setTutorial] = useState<{
-    id: string;
-    title: string;
-    workspaceId: string;
-  } | null>(null);
-  
+  const isNew = tutorialId === "new";
+
+  const [tutorial, setTutorial] = useState<Tutorial | null>(null);
   const [world, setWorld] = useState<World | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [activeAnnotation, setActiveAnnotation] = useState<Annotation | null>(null);
@@ -47,41 +56,123 @@ export default function TutorialEditorPage() {
   const [editMode, setEditMode] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [tutorialTitle, setTutorialTitle] = useState("New Tutorial");
 
-  // Load tutorial and world data
+  // Load tutorial or create new one
   useEffect(() => {
-    // For demo purposes, check if there's a worldId in the URL
-    const worldId = searchParams.get("worldId");
-    const apiKey = localStorage.getItem("wlt_api_key");
+    async function loadData() {
+      try {
+        if (isNew) {
+          // Creating new tutorial
+          const workspaceId = searchParams.get("workspaceId");
+          const worldId = searchParams.get("worldId");
 
-    if (worldId && apiKey) {
-      // Fetch world data
-      fetch(`/api/world/${worldId}`, {
-        headers: { "x-api-key": apiKey },
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.world) {
-            setWorld(data.world);
-            setTutorial({
-              id: tutorialId,
-              title: "New Tutorial",
-              workspaceId: worldId,
-            });
+          if (!workspaceId || !worldId) {
+            setLoading(false);
+            return;
           }
-          setLoading(false);
-        })
-        .catch((err) => {
-          console.error("Failed to load world:", err);
-          setLoading(false);
-        });
-    } else {
-      // Demo mode with placeholder
-      setLoading(false);
-    }
-  }, [tutorialId, searchParams]);
 
-  const handleAddAnnotation = (position: { x: number; y: number; z: number }) => {
+          // Fetch world data
+          const worldRes = await fetch(`/api/world/${worldId}`);
+          if (worldRes.ok) {
+            const worldData = await worldRes.json();
+            setWorld(worldData.world);
+          }
+
+          setTutorial({
+            id: "new",
+            title: "New Tutorial",
+            workspaceId,
+            shareLink: "",
+            annotations: [],
+          });
+        } else {
+          // Load existing tutorial
+          const res = await fetch(`/api/tutorials/${tutorialId}`);
+          if (!res.ok) {
+            setLoading(false);
+            return;
+          }
+
+          const data = await res.json();
+          setTutorial(data.tutorial);
+          setTutorialTitle(data.tutorial.title);
+          setAnnotations(data.tutorial.annotations || []);
+
+          // Fetch world data
+          if (data.tutorial.workspace?.modelUuid) {
+            const worldRes = await fetch(`/api/world/${data.tutorial.workspace.modelUuid}`);
+            if (worldRes.ok) {
+              const worldData = await worldRes.json();
+              setWorld(worldData.world);
+            }
+          }
+        }
+
+        setLoading(false);
+      } catch (err) {
+        console.error("Failed to load:", err);
+        setLoading(false);
+      }
+    }
+
+    loadData();
+  }, [tutorialId, isNew, searchParams]);
+
+  const saveTutorial = async () => {
+    if (!tutorial) return null;
+
+    setSaving(true);
+    try {
+      if (isNew) {
+        // Create new tutorial
+        const res = await fetch("/api/tutorials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: tutorialTitle,
+            workspaceId: tutorial.workspaceId,
+          }),
+        });
+
+        if (!res.ok) throw new Error("Failed to create tutorial");
+
+        const data = await res.json();
+        // Redirect to the new tutorial's edit page
+        router.replace(`/tutorials/${data.tutorial.id}`);
+        return data.tutorial;
+      } else {
+        // Update existing tutorial
+        const res = await fetch(`/api/tutorials/${tutorialId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: tutorialTitle }),
+        });
+
+        if (!res.ok) throw new Error("Failed to update tutorial");
+
+        const data = await res.json();
+        setTutorial({ ...tutorial, ...data.tutorial });
+        return data.tutorial;
+      }
+    } catch (err) {
+      console.error("Save error:", err);
+      return null;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddAnnotation = async (position: { x: number; y: number; z: number }) => {
+    // If this is a new tutorial, save it first
+    let currentTutorialId = tutorialId;
+    if (isNew) {
+      const saved = await saveTutorial();
+      if (!saved) return;
+      currentTutorialId = saved.id;
+    }
+
     const newAnnotation: Partial<Annotation> = {
       ...position,
       title: "",
@@ -93,37 +184,93 @@ export default function TutorialEditorPage() {
     setSidebarOpen(true);
   };
 
-  const handleSaveAnnotation = (data: Partial<Annotation>) => {
-    if (isNewAnnotation) {
-      const newAnnotation: Annotation = {
-        id: `ann_${Date.now()}`,
-        title: data.title || "Untitled",
-        content: data.content || "",
-        x: data.x || 0,
-        y: data.y || 0,
-        z: data.z || 0,
-        order: data.order || annotations.length + 1,
-      };
-      setAnnotations([...annotations, newAnnotation]);
-      setActiveAnnotation(newAnnotation);
-    } else if (editingAnnotation?.id) {
-      setAnnotations(
-        annotations.map((a) =>
-          a.id === editingAnnotation.id ? { ...a, ...data } : a
-        )
-      );
+  const handleSaveAnnotation = async (data: Partial<Annotation>) => {
+    const currentTutorialId = tutorial?.id === "new" ? null : tutorial?.id;
+    
+    if (!currentTutorialId || currentTutorialId === "new") {
+      // Save tutorial first if new
+      const saved = await saveTutorial();
+      if (!saved) return;
     }
-    setEditingAnnotation(null);
-    setIsNewAnnotation(false);
+
+    const targetTutorialId = currentTutorialId && currentTutorialId !== "new" 
+      ? currentTutorialId 
+      : tutorial?.id;
+
+    if (!targetTutorialId || targetTutorialId === "new") return;
+
+    setSaving(true);
+    try {
+      if (isNewAnnotation) {
+        // Create new annotation
+        const res = await fetch(`/api/tutorials/${targetTutorialId}/annotations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: data.title || "Untitled",
+            content: data.content || "",
+            x: data.x,
+            y: data.y,
+            z: data.z,
+            order: data.order || annotations.length + 1,
+          }),
+        });
+
+        if (!res.ok) throw new Error("Failed to create annotation");
+
+        const result = await res.json();
+        setAnnotations([...annotations, result.annotation]);
+        setActiveAnnotation(result.annotation);
+      } else if (editingAnnotation?.id) {
+        // Update existing annotation
+        const res = await fetch(`/api/tutorials/${targetTutorialId}/annotations`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            annotationId: editingAnnotation.id,
+            ...data,
+          }),
+        });
+
+        if (!res.ok) throw new Error("Failed to update annotation");
+
+        const result = await res.json();
+        setAnnotations(
+          annotations.map((a) =>
+            a.id === editingAnnotation.id ? result.annotation : a
+          )
+        );
+      }
+    } catch (err) {
+      console.error("Save annotation error:", err);
+    } finally {
+      setSaving(false);
+      setEditingAnnotation(null);
+      setIsNewAnnotation(false);
+    }
   };
 
-  const handleDeleteAnnotation = () => {
-    if (editingAnnotation?.id) {
+  const handleDeleteAnnotation = async () => {
+    if (!editingAnnotation?.id || !tutorial?.id || tutorial.id === "new") return;
+
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `/api/tutorials/${tutorial.id}/annotations?annotationId=${editingAnnotation.id}`,
+        { method: "DELETE" }
+      );
+
+      if (!res.ok) throw new Error("Failed to delete annotation");
+
       setAnnotations(annotations.filter((a) => a.id !== editingAnnotation.id));
       setActiveAnnotation(null);
+    } catch (err) {
+      console.error("Delete annotation error:", err);
+    } finally {
+      setSaving(false);
+      setEditingAnnotation(null);
+      setIsNewAnnotation(false);
     }
-    setEditingAnnotation(null);
-    setIsNewAnnotation(false);
   };
 
   const handleAnnotationClick = (annotation: Annotation) => {
@@ -143,12 +290,12 @@ export default function TutorialEditorPage() {
     );
   }
 
-  if (!world) {
+  if (!world || !tutorial) {
     return (
       <div className="min-h-screen bg-gray-900 text-white">
         <header className="border-b border-gray-700">
-          <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-            <Link href="/dashboard" className="flex items-center gap-2">
+          <div className="max-w-7xl mx-auto px-4 py-4">
+            <Link href="/dashboard" className="flex items-center gap-2 w-fit">
               <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold">
                 3D
               </div>
@@ -169,10 +316,10 @@ export default function TutorialEditorPage() {
               Create Workspace
             </Link>
             <Link
-              href="/studio"
+              href="/dashboard"
               className="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
             >
-              Open Studio
+              Back to Dashboard
             </Link>
           </div>
         </main>
@@ -192,12 +339,20 @@ export default function TutorialEditorPage() {
               </div>
             </Link>
             <div>
-              <h1 className="font-semibold">{tutorial?.title || "Tutorial Editor"}</h1>
+              <input
+                type="text"
+                value={tutorialTitle}
+                onChange={(e) => setTutorialTitle(e.target.value)}
+                onBlur={() => !isNew && saveTutorial()}
+                className="bg-transparent font-semibold border-b border-transparent hover:border-gray-600 focus:border-blue-500 focus:outline-none px-1"
+                placeholder="Tutorial title..."
+              />
               <p className="text-xs text-gray-400">{annotations.length} annotations</p>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-3">
+            {saving && <span className="text-sm text-gray-400">Saving...</span>}
             <button
               onClick={() => setEditMode(!editMode)}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -217,7 +372,7 @@ export default function TutorialEditorPage() {
               </svg>
             </button>
             <Link
-              href="/dashboard"
+              href={tutorial.workspaceId ? `/workspaces/${tutorial.workspaceId}` : "/dashboard"}
               className="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors"
             >
               Done
