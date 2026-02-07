@@ -198,12 +198,7 @@ export function DashboardClient({ user, workspaces, progress, allTutorials }: Da
                 >
                   + Create Workspace
                 </Link>
-                <Link
-                  href="/studio"
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors"
-                >
-                  Open 3D Studio
-                </Link>
+
               </div>
             </div>
 

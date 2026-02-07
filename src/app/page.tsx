@@ -22,9 +22,7 @@ export default function LandingPage() {
           </div>
           
           <div className="flex items-center gap-6">
-            <Link href="/studio" className="text-gray-300 hover:text-white transition-colors">
-              Studio
-            </Link>
+
             {!isPending && (
               session ? (
                 <UserButton />
@@ -69,12 +67,7 @@ export default function LandingPage() {
               >
                 Go to Dashboard
               </Link>
-              <Link
-                href="/studio"
-                className="px-8 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
-              >
-                Open Studio
-              </Link>
+
             </>
           ) : (
             <>
@@ -84,12 +77,7 @@ export default function LandingPage() {
               >
                 Start Free Trial
               </Link>
-              <Link
-                href="/studio"
-                className="px-8 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
-              >
-                Try Demo
-              </Link>
+
             </>
           )}
         </div>
@@ -225,7 +213,7 @@ export default function LandingPage() {
             <span className="font-semibold">TrainSpace</span>
           </div>
           <div className="flex gap-6 text-gray-400 text-sm">
-            <Link href="/studio" className="hover:text-white transition-colors">Studio</Link>
+
             <Link href="/auth/signin" className="hover:text-white transition-colors">Sign In</Link>
             <Link href="/auth/signup" className="hover:text-white transition-colors">Sign Up</Link>
           </div>
