@@ -4,9 +4,9 @@ const API_BASE_URL = "https://api.worldlabs.ai/marble/v1";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ worldId: string }> }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const { worldId } = await params;
+  const { id } = await params;
   const apiKey = process.env.WORLD_LABS_API_KEY;
 
   if (!apiKey) {
@@ -17,7 +17,7 @@ export async function GET(
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/worlds/${worldId}`, {
+    const response = await fetch(`${API_BASE_URL}/worlds/${id}`, {
       headers: {
         "WLT-Api-Key": apiKey,
       },
@@ -31,15 +31,14 @@ export async function GET(
       );
     }
 
-    const data = await response.json();
-    const world = data.world || data;
-
+    const worldData = await response.json();
+    
     return NextResponse.json({
       world: {
-        id: world.world_id || worldId,
-        display_name: world.display_name || "Generated World",
-        assets: world.assets,
-        world_marble_url: world.world_marble_url,
+        id: worldData.world_id,
+        display_name: worldData.display_name || "Generated World",
+        assets: worldData.assets,
+        world_marble_url: worldData.world_marble_url,
       },
     });
   } catch (error) {

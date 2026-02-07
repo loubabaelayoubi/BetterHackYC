@@ -7,12 +7,12 @@ export async function GET(
   { params }: { params: Promise<{ operationId: string }> }
 ) {
   const { operationId } = await params;
-  const apiKey = request.headers.get("x-api-key");
+  const apiKey = process.env.WORLD_LABS_API_KEY;
 
   if (!apiKey) {
     return NextResponse.json(
-      { error: "API key is required" },
-      { status: 400 }
+      { error: "World Labs API key not configured" },
+      { status: 500 }
     );
   }
 

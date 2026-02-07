@@ -1,641 +1,239 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import SplatViewer from "@/components/SplatViewer";
+import { useSession } from "@/lib/auth-client";
+import type { AppUser } from "@/lib/auth-client";
+import { UserButton } from "@/components/auth";
+import Link from "next/link";
 
-interface WorldAssets {
-  splats: {
-    spz_urls: {
-      "100k": string;
-      "500k": string;
-      full_res: string;
-    };
-  };
-  thumbnail_url: string;
-  caption: string;
-}
-
-interface World {
-  id: string;
-  display_name: string;
-  assets: WorldAssets;
-  world_marble_url: string;
-}
-
-type GenerationStatus = "idle" | "generating" | "uploading" | "loading" | "complete" | "error";
-
-export default function Home() {
-  const [apiKey, setApiKey] = useState("");
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [worldIdInput, setWorldIdInput] = useState("");
-  const [status, setStatus] = useState<GenerationStatus>("idle");
-  const [statusMessage, setStatusMessage] = useState("");
-  const [world, setWorld] = useState<World | null>(null);
-  const [showViewer, setShowViewer] = useState(false);
-  const [useDraft, setUseDraft] = useState(true);
-  
-  // Image upload state - now supports multiple images
-  const [selectedImages, setSelectedImages] = useState<File[]>([]);
-  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Load API key from localStorage on mount
-  useEffect(() => {
-    const savedKey = localStorage.getItem("wlt_api_key");
-    if (savedKey) {
-      setApiKey(savedKey);
-    }
-  }, []);
-
-  // Save API key to localStorage when it changes
-  const handleApiKeyChange = (value: string) => {
-    setApiKey(value);
-    if (value) {
-      localStorage.setItem("wlt_api_key", value);
-    } else {
-      localStorage.removeItem("wlt_api_key");
-    }
-  };
-
-  // Handle image selection - supports multiple
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
-
-    // Validate total count (max 8 images)
-    if (selectedImages.length + files.length > 8) {
-      setStatus("error");
-      setStatusMessage("Maximum 8 images allowed");
-      return;
-    }
-
-    const validFiles: File[] = [];
-    const newPreviews: string[] = [];
-
-    for (const file of files) {
-      // Validate file type
-      if (!file.type.startsWith("image/")) {
-        setStatus("error");
-        setStatusMessage(`${file.name} is not an image file`);
-        continue;
-      }
-      
-      // Validate file size (max 10MB each)
-      if (file.size > 10 * 1024 * 1024) {
-        setStatus("error");
-        setStatusMessage(`${file.name} exceeds 10MB limit`);
-        continue;
-      }
-      
-      validFiles.push(file);
-      newPreviews.push(URL.createObjectURL(file));
-    }
-
-    if (validFiles.length > 0) {
-      setSelectedImages(prev => [...prev, ...validFiles]);
-      setImagePreviews(prev => [...prev, ...newPreviews]);
-      setStatus("idle");
-      setStatusMessage("");
-    }
-  };
-
-  const removeImage = (index: number) => {
-    URL.revokeObjectURL(imagePreviews[index]);
-    setSelectedImages(prev => prev.filter((_, i) => i !== index));
-    setImagePreviews(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const clearAllImages = () => {
-    imagePreviews.forEach(url => URL.revokeObjectURL(url));
-    setSelectedImages([]);
-    setImagePreviews([]);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
-
-  // Upload image and get media asset ID
-  const uploadImage = async (file: File, index: number, total: number): Promise<string> => {
-    // Get file extension
-    const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
-    
-    // Step 1: Prepare upload
-    setStatusMessage(`Preparing upload (${index + 1}/${total})...`);
-    const prepareRes = await fetch("/api/upload/prepare", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey.trim(),
-      },
-      body: JSON.stringify({
-        fileName: file.name,
-        extension: extension,
-        kind: "image",
-      }),
-    });
-
-    if (!prepareRes.ok) {
-      const error = await prepareRes.json();
-      throw new Error(error.error || "Failed to prepare upload");
-    }
-
-    const { media_asset, upload_info } = await prepareRes.json();
-    
-    // Step 2: Upload file to signed URL
-    setStatusMessage(`Uploading image ${index + 1}/${total}...`);
-    const uploadRes = await fetch(upload_info.upload_url, {
-      method: "PUT",
-      headers: {
-        "Content-Type": file.type,
-        ...upload_info.required_headers,
-      },
-      body: file,
-    });
-
-    if (!uploadRes.ok) {
-      throw new Error(`Failed to upload image ${index + 1}`);
-    }
-
-    return media_asset.media_asset_id;
-  };
-
-  const loadExistingWorld = async (worldId: string) => {
-    if (!worldId.trim()) return;
-    if (!apiKey.trim()) {
-      setStatus("error");
-      setStatusMessage("Please enter your World Labs API key");
-      return;
-    }
-
-    setStatus("loading");
-    setStatusMessage("Loading world...");
-
-    try {
-      const res = await fetch(`/api/world/${worldId.trim()}`, {
-        headers: { "x-api-key": apiKey.trim() },
-      });
-
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || "Failed to load world");
-      }
-
-      const data = await res.json();
-      setWorld(data.world);
-      setStatus("complete");
-      setStatusMessage("World loaded successfully!");
-      setShowViewer(true);
-    } catch (error) {
-      console.error("Load world error:", error);
-      setStatus("error");
-      setStatusMessage(error instanceof Error ? error.message : "Failed to load world");
-    }
-  };
-
-  const generateWorld = async (mediaAssetIds?: string[]) => {
-    if ((!mediaAssetIds || mediaAssetIds.length === 0) && !prompt.trim()) return;
-    if (!apiKey.trim()) {
-      setStatus("error");
-      setStatusMessage("Please enter your World Labs API key");
-      return;
-    }
-
-    setStatus("generating");
-    setStatusMessage("Starting generation...");
-    setWorld(null);
-
-    try {
-      // Start generation
-      const generateRes = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          prompt: prompt.trim(), 
-          draft: useDraft, 
-          apiKey: apiKey.trim(),
-          mediaAssetIds: mediaAssetIds,
-        }),
-      });
-
-      if (!generateRes.ok) {
-        const error = await generateRes.json();
-        throw new Error(error.error || "Failed to start generation");
-      }
-
-      const { operationId } = await generateRes.json();
-      setStatusMessage("Generation in progress...");
-
-      // Poll for completion
-      let attempts = 0;
-      const maxAttempts = 120; // 10 minutes max (5s intervals)
-
-      while (attempts < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-
-        const statusRes = await fetch(`/api/status/${operationId}`, {
-          headers: { "x-api-key": apiKey.trim() },
-        });
-        if (!statusRes.ok) {
-          throw new Error("Failed to check status");
-        }
-
-        const statusData = await statusRes.json();
-
-        if (statusData.error) {
-          throw new Error(statusData.error.message || "Generation failed");
-        }
-
-        if (statusData.progress?.description) {
-          setStatusMessage(statusData.progress.description);
-        }
-
-        if (statusData.done && statusData.world) {
-          setWorld(statusData.world);
-          setStatus("complete");
-          setStatusMessage("World generated successfully!");
-          setShowViewer(true);
-          return;
-        }
-
-        attempts++;
-      }
-
-      throw new Error("Generation timed out");
-    } catch (error) {
-      console.error("Generation error:", error);
-      setStatus("error");
-      setStatusMessage(error instanceof Error ? error.message : "Unknown error");
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && status !== "generating" && status !== "uploading") {
-      e.preventDefault();
-      handleGenerate();
-    }
-  };
-
-  // Handle generation (with or without image)
-  const handleGenerate = async () => {
-    if (!apiKey.trim()) {
-      setStatus("error");
-      setStatusMessage("Please enter your World Labs API key");
-      return;
-    }
-
-    if (selectedImages.length === 0 && !prompt.trim()) {
-      setStatus("error");
-      setStatusMessage("Please enter a prompt or upload at least one image");
-      return;
-    }
-
-    try {
-      let mediaAssetIds: string[] = [];
-
-      // If images are selected, upload them first
-      if (selectedImages.length > 0) {
-        setStatus("uploading");
-        for (let i = 0; i < selectedImages.length; i++) {
-          const id = await uploadImage(selectedImages[i], i, selectedImages.length);
-          mediaAssetIds.push(id);
-        }
-      }
-
-      // Generate world
-      await generateWorld(mediaAssetIds.length > 0 ? mediaAssetIds : undefined);
-      
-      // Clear images after successful generation
-      clearAllImages();
-    } catch (error) {
-      console.error("Generation error:", error);
-      setStatus("error");
-      setStatusMessage(error instanceof Error ? error.message : "Unknown error");
-    }
-  };
+export default function LandingPage() {
+  const { data: session, isPending } = useSession();
+  const user = session?.user as AppUser | undefined;
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
-      <div className="container mx-auto px-4 py-16">
-        {/* Header */}
-        <div className="text-center mb-12">
-          <h1 className="text-5xl font-bold text-white mb-4">
-            🌍 World Labs 3D Generator
-          </h1>
-          <p className="text-gray-400 text-lg max-w-2xl mx-auto">
-            Enter a text prompt or upload an image to generate an immersive 3D scene using World Labs AI.
-            The scene will be rendered directly in your browser using Gaussian Splatting.
+    <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-800 text-white">
+      {/* Navigation */}
+      <nav className="border-b border-gray-700">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold">
+              3D
+            </div>
+            <span className="text-xl font-bold">TrainSpace</span>
+          </div>
+          
+          <div className="flex items-center gap-6">
+            <Link href="/studio" className="text-gray-300 hover:text-white transition-colors">
+              Studio
+            </Link>
+            {!isPending && (
+              session ? (
+                <UserButton />
+              ) : (
+                <div className="flex gap-3">
+                  <Link
+                    href="/auth/signin"
+                    className="px-4 py-2 text-gray-300 hover:text-white transition-colors"
+                  >
+                    Sign In
+                  </Link>
+                  <Link
+                    href="/auth/signup"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                  >
+                    Get Started
+                  </Link>
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      </nav>
+
+      {/* Hero Section */}
+      <section className="max-w-7xl mx-auto px-4 py-20 text-center">
+        <h1 className="text-5xl md:text-6xl font-bold mb-6">
+          3D Training for the
+          <span className="text-blue-500"> Modern Workforce</span>
+        </h1>
+        <p className="text-xl text-gray-400 max-w-2xl mx-auto mb-10">
+          Create immersive 3D training tutorials for blue collar workers. 
+          Annotate real environments, track progress, and onboard faster.
+        </p>
+        
+        <div className="flex gap-4 justify-center">
+          {session ? (
+            <>
+              <Link
+                href="/dashboard"
+                className="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+              >
+                Go to Dashboard
+              </Link>
+              <Link
+                href="/studio"
+                className="px-8 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
+              >
+                Open Studio
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link
+                href="/auth/signup"
+                className="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+              >
+                Start Free Trial
+              </Link>
+              <Link
+                href="/studio"
+                className="px-8 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
+              >
+                Try Demo
+              </Link>
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* Features Section */}
+      <section className="max-w-7xl mx-auto px-4 py-16">
+        <h2 className="text-3xl font-bold text-center mb-12">How It Works</h2>
+        
+        <div className="grid md:grid-cols-3 gap-8">
+          <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+            <div className="w-12 h-12 bg-blue-600/20 rounded-lg flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-semibold mb-2">1. Capture Your Space</h3>
+            <p className="text-gray-400">
+              Upload photos or use our AI to generate 3D models of your workspace, equipment, or facility.
+            </p>
+          </div>
+
+          <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+            <div className="w-12 h-12 bg-green-600/20 rounded-lg flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-semibold mb-2">2. Add Annotations</h3>
+            <p className="text-gray-400">
+              Place 3D annotations directly in the scene. Add instructions, safety warnings, and step-by-step guides.
+            </p>
+          </div>
+
+          <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+            <div className="w-12 h-12 bg-purple-600/20 rounded-lg flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-semibold mb-2">3. Track Progress</h3>
+            <p className="text-gray-400">
+              Share tutorials with employees and monitor their completion. See who&apos;s trained and who needs help.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Role-based CTA */}
+      <section className="max-w-7xl mx-auto px-4 py-16">
+        <div className="grid md:grid-cols-2 gap-8">
+          <div className="bg-gradient-to-br from-blue-900/50 to-blue-800/30 rounded-xl p-8 border border-blue-700/50">
+            <h3 className="text-2xl font-bold mb-4">For Managers</h3>
+            <ul className="space-y-3 text-gray-300 mb-6">
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Create unlimited workspaces
+              </li>
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Build interactive tutorials
+              </li>
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Monitor team progress
+              </li>
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Share via unique links
+              </li>
+            </ul>
+            <Link
+              href="/auth/signup"
+              className="inline-block px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+            >
+              Sign Up as Manager
+            </Link>
+          </div>
+
+          <div className="bg-gradient-to-br from-green-900/50 to-green-800/30 rounded-xl p-8 border border-green-700/50">
+            <h3 className="text-2xl font-bold mb-4">For Employees</h3>
+            <ul className="space-y-3 text-gray-300 mb-6">
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Interactive 3D walkthroughs
+              </li>
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Learn at your own pace
+              </li>
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Track your progress
+              </li>
+              <li className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Access from any device
+              </li>
+            </ul>
+            <Link
+              href="/auth/signup"
+              className="inline-block px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-medium transition-colors"
+            >
+              Sign Up as Employee
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t border-gray-700 mt-16">
+        <div className="max-w-7xl mx-auto px-4 py-8 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 bg-blue-600 rounded flex items-center justify-center font-bold text-sm">
+              3D
+            </div>
+            <span className="font-semibold">TrainSpace</span>
+          </div>
+          <div className="flex gap-6 text-gray-400 text-sm">
+            <Link href="/studio" className="hover:text-white transition-colors">Studio</Link>
+            <Link href="/auth/signin" className="hover:text-white transition-colors">Sign In</Link>
+            <Link href="/auth/signup" className="hover:text-white transition-colors">Sign Up</Link>
+          </div>
+          <p className="text-gray-500 text-sm">
+            © 2026 TrainSpace. Built for Better Hack YC.
           </p>
         </div>
-
-        {/* Input Section */}
-        <div className="max-w-2xl mx-auto">
-          {/* API Key Section */}
-          <div className="bg-gray-800/50 backdrop-blur rounded-2xl p-6 shadow-xl border border-gray-700 mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <label htmlFor="api-key" className="block text-sm font-medium text-gray-300">
-                World Labs API Key
-              </label>
-              <a
-                href="https://platform.worldlabs.ai/api-keys"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-blue-400 hover:text-blue-300"
-              >
-                Get your API key →
-              </a>
-            </div>
-            <div className="relative">
-              <input
-                id="api-key"
-                type={showApiKey ? "text" : "password"}
-                value={apiKey}
-                onChange={(e) => handleApiKeyChange(e.target.value)}
-                placeholder="Enter your WLT API key..."
-                className="w-full px-4 py-3 pr-20 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
-                disabled={status === "generating"}
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-300 text-sm"
-              >
-                {showApiKey ? "Hide" : "Show"}
-              </button>
-            </div>
-            {apiKey && (
-              <p className="text-xs text-green-400 mt-2">✓ API key saved to browser storage</p>
-            )}
-          </div>
-
-          <div className="bg-gray-800/50 backdrop-blur rounded-2xl p-6 shadow-xl border border-gray-700">
-            <div className="space-y-4">
-              <div>
-                <label htmlFor="prompt" className="block text-sm font-medium text-gray-300 mb-2">
-                  Describe your scene
-                </label>
-                <textarea
-                  id="prompt"
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={selectedImages.length > 0 ? "Optional: Add a description to guide the generation..." : "A mystical forest with glowing mushrooms and fireflies at twilight..."}
-                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-                  rows={3}
-                  disabled={status === "generating" || status === "uploading"}
-                />
-              </div>
-
-              {/* Image Upload Section */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-300">
-                    Or upload images <span className="text-gray-500">(up to 8)</span>
-                  </label>
-                  {selectedImages.length > 0 && (
-                    <button
-                      onClick={clearAllImages}
-                      className="text-xs text-red-400 hover:text-red-300"
-                    >
-                      Clear all
-                    </button>
-                  )}
-                </div>
-                
-                {/* Image Grid */}
-                {imagePreviews.length > 0 && (
-                  <div className="grid grid-cols-4 gap-2 mb-3">
-                    {imagePreviews.map((preview, index) => (
-                      <div key={index} className="relative aspect-square rounded-lg overflow-hidden group">
-                        <img
-                          src={preview}
-                          alt={`Selected ${index + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                        <button
-                          onClick={() => removeImage(index)}
-                          className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-red-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs px-1 py-0.5 truncate">
-                          {selectedImages[index]?.name}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Upload Button */}
-                {selectedImages.length < 8 && (
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-gray-600 rounded-xl p-4 text-center cursor-pointer hover:border-gray-500 hover:bg-gray-800/30 transition-colors"
-                  >
-                    <svg className="w-8 h-8 mx-auto text-gray-500 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                    </svg>
-                    <p className="text-gray-400 text-sm">
-                      {selectedImages.length === 0 ? "Click to upload images" : "Add more images"}
-                    </p>
-                    <p className="text-gray-500 text-xs mt-1">
-                      {selectedImages.length}/8 images • PNG, JPG, WEBP up to 10MB each
-                    </p>
-                  </div>
-                )}
-                
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleImageSelect}
-                  className="hidden"
-                />
-                
-                {selectedImages.length > 1 && (
-                  <p className="text-xs text-blue-400 mt-2">
-                    💡 Multiple images will be combined into a 360° world
-                  </p>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between">
-                <label className="flex items-center space-x-2 text-gray-300">
-                  <input
-                    type="checkbox"
-                    checked={useDraft}
-                    onChange={(e) => setUseDraft(e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
-                    disabled={status === "generating" || status === "uploading"}
-                  />
-                  <span className="text-sm">
-                    Draft mode <span className="text-gray-500">(faster, ~30-45s)</span>
-                  </span>
-                </label>
-
-                <button
-                  onClick={handleGenerate}
-                  disabled={(!prompt.trim() && selectedImages.length === 0) || !apiKey.trim() || status === "generating" || status === "uploading"}
-                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors flex items-center space-x-2"
-                >
-                  {status === "uploading" ? (
-                    <>
-                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                          fill="none"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        />
-                      </svg>
-                      <span>Uploading...</span>
-                    </>
-                  ) : status === "generating" ? (
-                    <>
-                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                          fill="none"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        />
-                      </svg>
-                      <span>Generating...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Generate World</span>
-                      <span>✨</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {/* Status Message */}
-            {statusMessage && (
-              <div
-                className={`mt-4 p-3 rounded-lg ${
-                  status === "error"
-                    ? "bg-red-900/50 text-red-300"
-                    : status === "complete"
-                    ? "bg-green-900/50 text-green-300"
-                    : "bg-blue-900/50 text-blue-300"
-                }`}
-              >
-                {statusMessage}
-              </div>
-            )}
-          </div>
-
-          {/* Generated World Card */}
-          {world && !showViewer && (
-            <div className="mt-8 bg-gray-800/50 backdrop-blur rounded-2xl overflow-hidden shadow-xl border border-gray-700">
-              <div className="relative">
-                <img
-                  src={world.assets.thumbnail_url}
-                  alt={world.display_name || "Generated world"}
-                  className="w-full h-64 object-cover"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-                <div className="absolute bottom-4 left-4 right-4">
-                  <h3 className="text-white text-xl font-semibold">
-                    {world.display_name || "Your Generated World"}
-                  </h3>
-                  <p className="text-gray-300 text-sm mt-1 line-clamp-2">
-                    {world.assets.caption}
-                  </p>
-                </div>
-              </div>
-              <div className="p-4 flex space-x-3">
-                <button
-                  onClick={() => setShowViewer(true)}
-                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
-                >
-                  View in 3D
-                </button>
-                <a
-                  href={world.world_marble_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
-                >
-                  Open in Marble ↗
-                </a>
-              </div>
-            </div>
-          )}
-
-          {/* Example Prompts */}
-          <div className="mt-8">
-            <h3 className="text-gray-400 text-sm font-medium mb-3">Try these prompts:</h3>
-            <div className="flex flex-wrap gap-2">
-              {[
-                "A cozy cabin in a snowy mountain forest",
-                "An underwater coral reef with tropical fish",
-                "A futuristic cyberpunk city street at night",
-                "A peaceful Japanese zen garden with cherry blossoms",
-                "An ancient temple ruins in a jungle",
-              ].map((example) => (
-                <button
-                  key={example}
-                  onClick={() => setPrompt(example)}
-                  disabled={status === "generating" || status === "loading" || status === "uploading"}
-                  className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 text-sm rounded-full transition-colors"
-                >
-                  {example}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Load Existing World */}
-          <div className="mt-8 bg-gray-800/30 rounded-xl p-4 border border-gray-700/50">
-            <h3 className="text-gray-400 text-sm font-medium mb-3">Or load an existing world:</h3>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={worldIdInput}
-                onChange={(e) => setWorldIdInput(e.target.value)}
-                placeholder="World ID (e.g., cd34826d-72bf-493a-8f31-52b816a5566d)"
-                className="flex-1 px-3 py-2 bg-gray-900/50 border border-gray-600 rounded-lg text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled={status === "generating" || status === "loading" || status === "uploading"}
-              />
-              <button
-                onClick={() => loadExistingWorld(worldIdInput)}
-                disabled={!worldIdInput.trim() || !apiKey.trim() || status === "generating" || status === "loading" || status === "uploading"}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors"
-              >
-                Load
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 3D Viewer Modal */}
-      {showViewer && (
-        <SplatViewer world={world} onClose={() => setShowViewer(false)} />
-      )}
-    </main>
+      </footer>
+    </div>
   );
 }

@@ -3,16 +3,18 @@ import { NextRequest, NextResponse } from "next/server";
 const API_BASE_URL = "https://api.worldlabs.ai/marble/v1";
 
 export async function POST(request: NextRequest) {
+  const apiKey = process.env.WORLD_LABS_API_KEY;
+
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "World Labs API key not configured" },
+      { status: 500 }
+    );
+  }
+
   try {
     const body = await request.json();
-    const { prompt, draft = true, apiKey, mediaAssetIds } = body;
-
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "API key is required" },
-        { status: 400 }
-      );
-    }
+    const { prompt, draft = true, mediaAssetIds } = body;
 
     // Build world_prompt based on input type
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

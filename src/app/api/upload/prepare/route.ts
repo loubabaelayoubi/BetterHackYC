@@ -3,12 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 const API_BASE_URL = "https://api.worldlabs.ai/marble/v1";
 
 export async function POST(request: NextRequest) {
-  const apiKey = request.headers.get("x-api-key");
+  const apiKey = process.env.WORLD_LABS_API_KEY;
 
   if (!apiKey) {
     return NextResponse.json(
-      { error: "API key is required" },
-      { status: 400 }
+      { error: "World Labs API key not configured" },
+      { status: 500 }
     );
   }
 
