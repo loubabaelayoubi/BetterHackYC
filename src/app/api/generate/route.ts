@@ -5,7 +5,7 @@ const API_BASE_URL = "https://api.worldlabs.ai/marble/v1";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { prompt, draft = true, apiKey, mediaAssetId } = body;
+    const { prompt, draft = true, apiKey, mediaAssetIds } = body;
 
     if (!apiKey) {
       return NextResponse.json(
@@ -18,16 +18,33 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let worldPrompt: any;
     
-    if (mediaAssetId) {
-      // Image-to-world generation
-      worldPrompt = {
-        type: "image",
-        image_prompt: {
-          source: "media_asset",
-          media_asset_id: mediaAssetId,
-        },
-        disable_recaption: false,
-      };
+    if (mediaAssetIds && mediaAssetIds.length > 0) {
+      if (mediaAssetIds.length === 1) {
+        // Single image-to-world generation
+        worldPrompt = {
+          type: "image",
+          image_prompt: {
+            source: "media_asset",
+            media_asset_id: mediaAssetIds[0],
+          },
+          disable_recaption: false,
+        };
+      } else {
+        // Multi-image-to-world generation
+        worldPrompt = {
+          type: "multi-image",
+          multi_image_prompt: mediaAssetIds.map((id: string, index: number) => ({
+            content: {
+              source: "media_asset",
+              media_asset_id: id,
+            },
+            // Distribute images evenly around the sphere
+            azimuth: (360 / mediaAssetIds.length) * index,
+          })),
+          reconstruct_images: mediaAssetIds.length > 4,
+          disable_recaption: false,
+        };
+      }
       
       // Add text prompt if provided (for guidance)
       if (prompt?.trim()) {
@@ -42,7 +59,7 @@ export async function POST(request: NextRequest) {
       };
     } else {
       return NextResponse.json(
-        { error: "Either prompt or mediaAssetId is required" },
+        { error: "Either prompt or mediaAssetIds is required" },
         { status: 400 }
       );
     }

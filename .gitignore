@@ -62,4 +62,4 @@ out/
 Thumbs.db
 
 # Stakpak
-.stakpak/
+.stakpak/session*
